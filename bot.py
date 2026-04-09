@@ -13,6 +13,7 @@ if not TOKEN:
     raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
 
 CHANNEL_ID = 1491695833119199232
+ALLOWED_ROLE_ID = 1489240048510570766
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 
@@ -26,7 +27,6 @@ intents.reactions = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 
 # =========================
 # PLIK STANU
@@ -48,7 +48,6 @@ def save_state(state: dict) -> None:
 
 
 state = load_state()
-
 
 # =========================
 # POMOCNICZE
@@ -199,7 +198,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # KOMENDA !lol
 # =========================
 @bot.command(name="lol")
-@commands.has_permissions(manage_messages=True)
+@commands.has_role(ALLOWED_ROLE_ID)
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
@@ -224,8 +223,8 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 
 @lol_command.error
 async def lol_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("Nie masz uprawnień do użycia tej komendy.")
+    if isinstance(error, commands.MissingRole):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
