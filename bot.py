@@ -26,7 +26,7 @@ intents.messages = True
 intents.reactions = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
 # PLIK STANU
@@ -188,7 +188,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 
 # =========================
-# KOMENDA /lol
+# KOMENDA !lol
 # =========================
 @bot.command(name="lol")
 @commands.has_role(ALLOWED_ROLE_ID)
@@ -208,6 +208,10 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
     total = bottom_count + middle_count + top_count
     if total == 0:
         await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        return
+        
+    if total == 7:
+        await ctx.reply("Maksymalna ilość kanałów to 7.")
         return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
@@ -237,9 +241,9 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRole):
         await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Użycie: `/lol <godzina> <dół> <środek> <góra>`")
+        await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `/lol 19 3 2 1`")
+        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
     else:
         await ctx.reply(f"Wystąpił błąd: `{error}`")
 
