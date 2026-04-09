@@ -13,7 +13,7 @@ if not TOKEN:
     raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
 
 CHANNEL_ID = 1491695833119199232
-ALLOWED_ROLE_ID = 1489240048510570766
+ALLOWED_ROLE_ID = 717702962851479602
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 
@@ -138,19 +138,12 @@ async def rebuild_all_tracked_messages() -> None:
 
 
 async def create_board(channel: discord.TextChannel, headers: list[str]) -> None:
-    state["tracked_messages"] = {}
-
     for title in headers:
         msg = await channel.send(title)
         await msg.add_reaction(TARGET_EMOJI)
         state["tracked_messages"][str(msg.id)] = title
 
     save_state(state)
-
-
-async def reset_board(channel: discord.TextChannel, headers: list[str]) -> None:
-    await clear_entire_channel(channel)
-    await create_board(channel, headers)
 
 
 async def handle_reaction_change(payload: discord.RawReactionActionEvent) -> None:
@@ -218,9 +211,27 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
         return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
-    await reset_board(ctx.channel, headers)
+    await create_board(ctx.channel, headers)
 
 
+# =========================
+# KOMENDA !clear
+# =========================
+@bot.command(name="clear")
+@commands.has_role(ALLOWED_ROLE_ID)
+async def clear_command(ctx: commands.Context):
+    if ctx.channel.id != CHANNEL_ID:
+        await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
+        return
+
+    await clear_entire_channel(ctx.channel)
+    state["tracked_messages"] = {}
+    save_state(state)
+
+
+# =========================
+# OBSŁUGA BŁĘDÓW
+# =========================
 @lol_command.error
 async def lol_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRole):
@@ -229,6 +240,14 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
+    else:
+        await ctx.reply(f"Wystąpił błąd: `{error}`")
+
+
+@clear_command.error
+async def clear_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.MissingRole):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
     else:
         await ctx.reply(f"Wystąpił błąd: `{error}`")
 
