@@ -89,7 +89,7 @@ def get_tracked_entry(message_id: int) -> dict | None:
 
     if entry["mode"] == "rajd":
         if "capacity" not in entry or not isinstance(entry["capacity"], int):
-            entry["capacity"] = 8
+            entry["capacity"] = 2
             changed = True
 
     if changed:
@@ -413,7 +413,7 @@ async def rajd_command(ctx: commands.Context, capacity: int):
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
         return
 
-    if not (8 <= capacity <= 20):
+    if not (2 <= capacity <= 20):
         await ctx.reply("Liczba osób dla `!rajd` musi być z przedziału 8-20.")
         return
 
