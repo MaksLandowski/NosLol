@@ -12,10 +12,15 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
 
-CHANNEL_ID = 1491143706139426857
+LOL_CHANNEL_NAME = "zapisy-lol-tylko"
+RAID_CHANNEL_NAME = "rajdy"
+CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, RAID_CHANNEL_NAME}
+TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, RAID_CHANNEL_NAME}
+
 ALLOWED_ROLE_ID = 1489240048510570766
 ALLOWED_ROLE_ID_2 = 1489244935260475402
 ALLOWED_ROLE_ID_3 = 1491816058967953478
+
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 MAX_VISIBLE_USERS = 5
@@ -70,7 +75,8 @@ def get_tracked_entry(message_id: int) -> dict | None:
         entry = {
             "mode": "lol",
             "title": entry,
-            "queue": []
+            "queue": [],
+            "channel_name": LOL_CHANNEL_NAME,
         }
         tracked[str(message_id)] = entry
         changed = True
@@ -85,6 +91,10 @@ def get_tracked_entry(message_id: int) -> dict | None:
 
     if "queue" not in entry or not isinstance(entry["queue"], list):
         entry["queue"] = []
+        changed = True
+
+    if "channel_name" not in entry:
+        entry["channel_name"] = LOL_CHANNEL_NAME if entry["mode"] == "lol" else RAID_CHANNEL_NAME
         changed = True
 
     if entry["mode"] == "rajd":
@@ -150,16 +160,14 @@ def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: in
     return headers
 
 
-async def get_target_channel() -> discord.TextChannel | None:
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(CHANNEL_ID)
-        except Exception:
-            return None
+async def get_target_channel(channel_name: str, guild: discord.Guild | None = None) -> discord.TextChannel | None:
+    if guild is not None:
+        return discord.utils.get(guild.text_channels, name=channel_name)
 
-    if isinstance(channel, discord.TextChannel):
-        return channel
+    for guild in bot.guilds:
+        channel = discord.utils.get(guild.text_channels, name=channel_name)
+        if channel is not None:
+            return channel
 
     return None
 
@@ -260,12 +268,19 @@ async def rebuild_one_message(channel: discord.TextChannel, message_id: int) -> 
 
 
 async def rebuild_all_tracked_messages() -> None:
-    channel = await get_target_channel()
-    if channel is None:
-        return
+    tracked = state.get("tracked_messages", {})
 
-    tracked_ids = list(state.get("tracked_messages", {}).keys())
-    for message_id_str in tracked_ids:
+    for message_id_str in list(tracked.keys()):
+        entry = get_tracked_entry(int(message_id_str))
+        if entry is None:
+            continue
+
+        channel_name = entry.get("channel_name", LOL_CHANNEL_NAME)
+        channel = await get_target_channel(channel_name)
+
+        if channel is None:
+            continue
+
         await rebuild_one_message(channel, int(message_id_str))
 
 
@@ -277,7 +292,8 @@ async def create_board(channel: discord.TextChannel, headers: list[str]) -> None
         state["tracked_messages"][str(msg.id)] = {
             "mode": "lol",
             "title": title,
-            "queue": []
+            "queue": [],
+            "channel_name": channel.name,
         }
 
     save_state(state)
@@ -294,56 +310,75 @@ async def create_raid(channel: discord.TextChannel, capacity: int) -> None:
         "mode": "rajd",
         "title": title,
         "capacity": capacity,
-        "queue": []
+        "queue": [],
+        "channel_name": channel.name,
     }
     save_state(state)
 
 
-async def handle_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    if payload.channel_id != CHANNEL_ID:
-        return
+async def resolve_payload_text_channel(payload: discord.RawReactionActionEvent) -> discord.TextChannel | None:
+    channel = bot.get_channel(payload.channel_id)
 
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            fetched = await bot.fetch_channel(payload.channel_id)
+            if isinstance(fetched, discord.TextChannel):
+                channel = fetched
+            else:
+                return None
+        except Exception:
+            return None
+
+    return channel
+
+
+async def handle_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     if bot.user and payload.user_id == bot.user.id:
         return
 
     if str(payload.emoji) != TARGET_EMOJI:
         return
 
+    channel = await resolve_payload_text_channel(payload)
+    if channel is None or channel.name not in TRACKED_CHANNEL_NAMES:
+        return
+
     entry = get_tracked_entry(payload.message_id)
     if entry is None:
+        return
+
+    # dodatkowe zabezpieczenie: reakcja musi być na wiadomości z właściwego kanału
+    if entry.get("channel_name") != channel.name:
         return
 
     if payload.user_id not in entry["queue"]:
         entry["queue"].append(payload.user_id)
         save_state(state)
 
-    channel = await get_target_channel()
-    if channel is None:
-        return
-
     await rebuild_one_message(channel, payload.message_id)
 
 
 async def handle_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
-    if payload.channel_id != CHANNEL_ID:
-        return
-
     if bot.user and payload.user_id == bot.user.id:
         return
 
     if str(payload.emoji) != TARGET_EMOJI:
         return
 
+    channel = await resolve_payload_text_channel(payload)
+    if channel is None or channel.name not in TRACKED_CHANNEL_NAMES:
+        return
+
     entry = get_tracked_entry(payload.message_id)
     if entry is None:
         return
 
+    # dodatkowe zabezpieczenie: reakcja musi być na wiadomości z właściwego kanału
+    if entry.get("channel_name") != channel.name:
+        return
+
     entry["queue"] = [user_id for user_id in entry["queue"] if user_id != payload.user_id]
     save_state(state)
-
-    channel = await get_target_channel()
-    if channel is None:
-        return
 
     await rebuild_one_message(channel, payload.message_id)
 
@@ -373,8 +408,8 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 @bot.command(name="lol")
 @commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
-    if ctx.channel.id != CHANNEL_ID:
-        await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
+    if ctx.channel.name != LOL_CHANNEL_NAME:
+        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL_CHANNEL_NAME}.")
         return
 
     if not (0 <= hour <= 23):
@@ -409,8 +444,8 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 @bot.command(name="rajd")
 @commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def rajd_command(ctx: commands.Context, capacity: int):
-    if ctx.channel.id != CHANNEL_ID:
-        await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
+    if ctx.channel.name != RAID_CHANNEL_NAME:
+        await ctx.reply(f"Ta komenda działa tylko na kanale #{RAID_CHANNEL_NAME}.")
         return
 
     if not (8 <= capacity <= 20):
@@ -431,8 +466,9 @@ async def rajd_command(ctx: commands.Context, capacity: int):
 @bot.command(name="clear")
 @commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def clear_command(ctx: commands.Context, amount: int):
-    if ctx.channel.id != CHANNEL_ID:
-        await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
+    if ctx.channel.name not in CLEAR_CHANNEL_NAMES:
+        allowed = ", ".join(f"#{name}" for name in sorted(CLEAR_CHANNEL_NAMES))
+        await ctx.reply(f"Ta komenda działa tylko na kanałach: {allowed}.")
         return
 
     if amount < 0:
