@@ -17,6 +17,7 @@ ALLOWED_ROLE_ID = 1489240048510570766
 ALLOWED_ROLE_ID_2 = 1489244935260475402
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
+MAX_REACTIONS = 6
 
 # =========================
 # INTENTS
@@ -151,7 +152,8 @@ async def rebuild_one_message(channel: discord.TextChannel, message_id: int, tit
                 continue
             user_ids.append(user.id)
 
-    new_content = render_message_content(title, user_ids)
+    visible_user_ids = user_ids[:MAX_REACTIONS]
+    new_content = render_message_content(title, visible_user_ids)
 
     await message.edit(
         content=new_content,
@@ -298,7 +300,7 @@ async def clear_command(ctx: commands.Context, amount: int):
 # =========================
 @lol_command.error
 async def lol_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingRole):
+    if isinstance(error, commands.MissingAnyRole):
         await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
@@ -310,7 +312,7 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
 
 @clear_command.error
 async def clear_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingRole):
+    if isinstance(error, commands.MissingAnyRole):
         await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!clear <liczba>`\nPrzykład: `!clear 10` albo `!clear 0`")
