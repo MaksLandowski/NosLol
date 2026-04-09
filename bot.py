@@ -209,10 +209,6 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
     if total == 0:
         await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
         return
-    
-    if total == 7:
-        await ctx.replay("Maksymalna liczba kanałów to 7.")
-        return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
     await create_board(ctx.channel, headers)
