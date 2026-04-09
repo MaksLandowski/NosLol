@@ -210,7 +210,8 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
         await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
         return
         
-    if total == 7:
+    total2 = bottom_count + middle_count + top_count    
+    if total2 == 7:
         await ctx.reply("Maksymalna ilość kanałów to 7.")
         return
 
