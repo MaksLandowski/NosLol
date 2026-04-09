@@ -15,6 +15,7 @@ if not TOKEN:
 CHANNEL_ID = 1491502291822317588
 ALLOWED_ROLE_ID = 1489240048510570766
 ALLOWED_ROLE_ID_2 = 1489244935260475402
+ALLOWED_ROLE_ID_3 = 1491816058967953478
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 MAX_VISIBLE_USERS = 5
@@ -61,29 +62,71 @@ def get_tracked_entry(message_id: int) -> dict | None:
     if entry is None:
         return None
 
+    changed = False
+
     # migracja ze starego formatu:
     # "123456789": "LOL 19:00 ch1 dół ..."
     if isinstance(entry, str):
         entry = {
+            "mode": "lol",
             "title": entry,
             "queue": []
         }
         tracked[str(message_id)] = entry
-        save_state(state)
+        changed = True
+
+    if "mode" not in entry:
+        entry["mode"] = "lol"
+        changed = True
 
     if "title" not in entry:
         entry["title"] = ""
+        changed = True
 
     if "queue" not in entry or not isinstance(entry["queue"], list):
         entry["queue"] = []
+        changed = True
+
+    if entry["mode"] == "rajd":
+        if "capacity" not in entry or not isinstance(entry["capacity"], int):
+            entry["capacity"] = 8
+            changed = True
+
+    if changed:
+        save_state(state)
 
     return entry
 
 
-def render_message_content(title: str, user_ids: list[int]) -> str:
+def render_lol_message_content(title: str, user_ids: list[int]) -> str:
     lines = [title]
     for index, user_id in enumerate(user_ids, start=1):
         lines.append(f"{index}. <@{user_id}>")
+    return "\n".join(lines)
+
+
+def render_raid_message_content(title: str, capacity: int, user_ids: list[int]) -> str:
+    squad = user_ids[:capacity]
+    reserve = user_ids[capacity:]
+
+    lines = [title, "", "Skład:"]
+
+    for index in range(capacity):
+        if index < len(squad):
+            lines.append(f"{index + 1}. <@{squad[index]}>")
+        else:
+            lines.append(f"{index + 1}.")
+
+    lines.append("")
+    lines.append("Rezerwa:")
+
+    reserve_visible_count = max(2, len(reserve))
+    for index in range(reserve_visible_count):
+        if index < len(reserve):
+            lines.append(f"{index + 1}. <@{reserve[index]}>")
+        else:
+            lines.append(f"{index + 1}.")
+
     return "\n".join(lines)
 
 
@@ -200,8 +243,15 @@ async def rebuild_one_message(channel: discord.TextChannel, message_id: int) -> 
     entry["queue"] = queue
     save_state(state)
 
-    visible_user_ids = queue[:MAX_VISIBLE_USERS]
-    new_content = render_message_content(entry["title"], visible_user_ids)
+    if entry["mode"] == "rajd":
+        new_content = render_raid_message_content(
+            entry["title"],
+            entry["capacity"],
+            queue
+        )
+    else:
+        visible_user_ids = queue[:MAX_VISIBLE_USERS]
+        new_content = render_lol_message_content(entry["title"], visible_user_ids)
 
     await message.edit(
         content=new_content,
@@ -225,10 +275,27 @@ async def create_board(channel: discord.TextChannel, headers: list[str]) -> None
         await msg.add_reaction(TARGET_EMOJI)
 
         state["tracked_messages"][str(msg.id)] = {
+            "mode": "lol",
             "title": title,
             "queue": []
         }
 
+    save_state(state)
+
+
+async def create_raid(channel: discord.TextChannel, capacity: int) -> None:
+    title = f"RAJD ({capacity} osób)"
+    content = render_raid_message_content(title, capacity, [])
+
+    msg = await channel.send(content)
+    await msg.add_reaction(TARGET_EMOJI)
+
+    state["tracked_messages"][str(msg.id)] = {
+        "mode": "rajd",
+        "title": title,
+        "capacity": capacity,
+        "queue": []
+    }
     save_state(state)
 
 
@@ -304,7 +371,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # KOMENDA !lol
 # =========================
 @bot.command(name="lol")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2)
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
@@ -337,10 +404,32 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 
 
 # =========================
+# KOMENDA !rajd
+# =========================
+@bot.command(name="rajd")
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
+async def rajd_command(ctx: commands.Context, capacity: int):
+    if ctx.channel.id != CHANNEL_ID:
+        await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
+        return
+
+    if not (8 <= capacity <= 20):
+        await ctx.reply("Liczba osób dla `!rajd` musi być z przedziału 8-20.")
+        return
+
+    await create_raid(ctx.channel, capacity)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+# =========================
 # KOMENDA !clear
 # =========================
 @bot.command(name="clear")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2)
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def clear_command(ctx: commands.Context, amount: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
@@ -391,6 +480,18 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
+    else:
+        await ctx.reply(f"Wystąpił błąd: `{error}`")
+
+
+@rajd_command.error
+async def rajd_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.MissingAnyRole):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("Użycie: `!rajd <liczba>`\nPrzykład: `!rajd 12`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!rajd 12`")
     else:
         await ctx.reply(f"Wystąpił błąd: `{error}`")
 
