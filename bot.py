@@ -26,7 +26,7 @@ intents.messages = True
 intents.reactions = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 # =========================
 # PLIK STANU
@@ -65,15 +65,15 @@ def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: in
     channel_number = 1
 
     for _ in range(bottom_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} dół")
+        headers.append(f"LOL {formatted_hour} ch{channel_number} dół (zalecany lvl 30-40)")
         channel_number += 1
 
     for _ in range(middle_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} środek")
+        headers.append(f"LOL {formatted_hour} ch{channel_number} środek (zalecany lvl 38-50)")
         channel_number += 1
 
     for _ in range(top_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} góra")
+        headers.append(f"LOL {formatted_hour} ch{channel_number} góra (zalecany lvl 48-60)")
         channel_number += 1
 
     return headers
@@ -208,6 +208,10 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
     total = bottom_count + middle_count + top_count
     if total == 0:
         await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        return
+    
+    if total == 7:
+        await ctx.replay("Maksymalna liczba kanałów to 7.")
         return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
