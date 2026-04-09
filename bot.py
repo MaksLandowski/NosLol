@@ -93,11 +93,42 @@ async def get_target_channel() -> discord.TextChannel | None:
     return None
 
 
-async def clear_entire_channel(channel: discord.TextChannel) -> None:
-    while True:
-        deleted = await channel.purge(limit=100, bulk=False)
+async def clear_messages(
+    channel: discord.TextChannel,
+    amount: int,
+    *,
+    before: discord.Message | None = None
+) -> list[discord.Message]:
+    deleted_messages: list[discord.Message] = []
+    remaining = amount
+
+    while remaining > 0:
+        batch_size = min(remaining, 100)
+        deleted = await channel.purge(limit=batch_size, bulk=False, before=before)
         if not deleted:
             break
+
+        deleted_messages.extend(deleted)
+        remaining -= len(deleted)
+
+    return deleted_messages
+
+
+async def clear_entire_channel(
+    channel: discord.TextChannel,
+    *,
+    before: discord.Message | None = None
+) -> list[discord.Message]:
+    deleted_messages: list[discord.Message] = []
+
+    while True:
+        deleted = await channel.purge(limit=100, bulk=False, before=before)
+        if not deleted:
+            break
+
+        deleted_messages.extend(deleted)
+
+    return deleted_messages
 
 
 async def rebuild_one_message(channel: discord.TextChannel, message_id: int, title: str) -> None:
@@ -208,8 +239,8 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
     total = bottom_count + middle_count + top_count
     if total == 0:
         await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
-        return       
-  
+        return
+
     if total > 7:
         await ctx.reply("Maksymalna ilość kanałów to 7.")
         return
@@ -223,14 +254,42 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 # =========================
 @bot.command(name="clear")
 @commands.has_role(ALLOWED_ROLE_ID)
-async def clear_command(ctx: commands.Context):
+async def clear_command(ctx: commands.Context, amount: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
         return
 
-    await clear_entire_channel(ctx.channel)
-    state["tracked_messages"] = {}
+    if amount < 0:
+        await ctx.reply("Podaj liczbę 0 lub większą.")
+        return
+
+    if amount == 0:
+        deleted_messages = await clear_entire_channel(ctx.channel, before=ctx.message)
+
+        state["tracked_messages"] = {
+            msg_id: title
+            for msg_id, title in state.get("tracked_messages", {}).items()
+            if int(msg_id) not in {msg.id for msg in deleted_messages}
+        }
+        save_state(state)
+
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        return
+
+    deleted_messages = await clear_messages(ctx.channel, amount, before=ctx.message)
+
+    for msg in deleted_messages:
+        state["tracked_messages"].pop(str(msg.id), None)
+
     save_state(state)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
 
 
 # =========================
@@ -252,6 +311,10 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
 async def clear_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRole):
         await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("Użycie: `!clear <liczba>`\nPrzykład: `!clear 10` albo `!clear 0`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!clear 25`")
     else:
         await ctx.reply(f"Wystąpił błąd: `{error}`")
 
