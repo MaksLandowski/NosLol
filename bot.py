@@ -12,8 +12,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
 
-CHANNEL_ID = 1491695833119199232
-ALLOWED_ROLE_ID = 717702962851479602
+CHANNEL_ID = 1489240048510570766
+ALLOWED_ROLE_ID = 1491502291822317588
+ALLOWED_ROLE_ID_2 = 1489244935260475402
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 
@@ -222,7 +223,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # KOMENDA !lol
 # =========================
 @bot.command(name="lol")
-@commands.has_role(ALLOWED_ROLE_ID)
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2)
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
@@ -253,7 +254,7 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 # KOMENDA !clear
 # =========================
 @bot.command(name="clear")
-@commands.has_role(ALLOWED_ROLE_ID)
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2)
 async def clear_command(ctx: commands.Context, amount: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
