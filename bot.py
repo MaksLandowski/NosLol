@@ -17,7 +17,7 @@ ALLOWED_ROLE_ID = 1489240048510570766
 ALLOWED_ROLE_ID_2 = 1489244935260475402
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
-MAX_REACTIONS = 2
+MAX_VISIBLE_USERS = 6
 
 # =========================
 # INTENTS
@@ -54,6 +54,32 @@ state = load_state()
 # =========================
 # POMOCNICZE
 # =========================
+def get_tracked_entry(message_id: int) -> dict | None:
+    tracked = state.setdefault("tracked_messages", {})
+    entry = tracked.get(str(message_id))
+
+    if entry is None:
+        return None
+
+    # migracja ze starego formatu:
+    # "123456789": "LOL 19:00 ch1 dół ..."
+    if isinstance(entry, str):
+        entry = {
+            "title": entry,
+            "queue": []
+        }
+        tracked[str(message_id)] = entry
+        save_state(state)
+
+    if "title" not in entry:
+        entry["title"] = ""
+
+    if "queue" not in entry or not isinstance(entry["queue"], list):
+        entry["queue"] = []
+
+    return entry
+
+
 def render_message_content(title: str, user_ids: list[int]) -> str:
     lines = [title]
     for index, user_id in enumerate(user_ids, start=1):
@@ -133,16 +159,7 @@ async def clear_entire_channel(
     return deleted_messages
 
 
-async def rebuild_one_message(channel: discord.TextChannel, message_id: int, title: str) -> None:
-    try:
-        message = await channel.fetch_message(message_id)
-    except discord.NotFound:
-        state["tracked_messages"].pop(str(message_id), None)
-        save_state(state)
-        return
-    except Exception:
-        return
-
+async def get_actual_reaction_users(message: discord.Message) -> list[int]:
     reaction_obj = discord.utils.get(message.reactions, emoji=TARGET_EMOJI)
 
     user_ids: list[int] = []
@@ -152,8 +169,39 @@ async def rebuild_one_message(channel: discord.TextChannel, message_id: int, tit
                 continue
             user_ids.append(user.id)
 
-    visible_user_ids = user_ids[:MAX_REACTIONS]
-    new_content = render_message_content(title, visible_user_ids)
+    return user_ids
+
+
+async def rebuild_one_message(channel: discord.TextChannel, message_id: int) -> None:
+    entry = get_tracked_entry(message_id)
+    if entry is None:
+        return
+
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.NotFound:
+        state["tracked_messages"].pop(str(message_id), None)
+        save_state(state)
+        return
+    except Exception:
+        return
+
+    actual_user_ids = await get_actual_reaction_users(message)
+
+    # zostawiamy tylko osoby, które nadal mają reakcję
+    queue = [user_id for user_id in entry["queue"] if user_id in actual_user_ids]
+
+    # jeśli ktoś ma reakcję, ale nie ma go jeszcze w kolejce,
+    # dopinamy go na końcu
+    for user_id in actual_user_ids:
+        if user_id not in queue:
+            queue.append(user_id)
+
+    entry["queue"] = queue
+    save_state(state)
+
+    visible_user_ids = queue[:MAX_VISIBLE_USERS]
+    new_content = render_message_content(entry["title"], visible_user_ids)
 
     await message.edit(
         content=new_content,
@@ -166,21 +214,25 @@ async def rebuild_all_tracked_messages() -> None:
     if channel is None:
         return
 
-    tracked = list(state.get("tracked_messages", {}).items())
-    for message_id_str, title in tracked:
-        await rebuild_one_message(channel, int(message_id_str), title)
+    tracked_ids = list(state.get("tracked_messages", {}).keys())
+    for message_id_str in tracked_ids:
+        await rebuild_one_message(channel, int(message_id_str))
 
 
 async def create_board(channel: discord.TextChannel, headers: list[str]) -> None:
     for title in headers:
         msg = await channel.send(title)
         await msg.add_reaction(TARGET_EMOJI)
-        state["tracked_messages"][str(msg.id)] = title
+
+        state["tracked_messages"][str(msg.id)] = {
+            "title": title,
+            "queue": []
+        }
 
     save_state(state)
 
 
-async def handle_reaction_change(payload: discord.RawReactionActionEvent) -> None:
+async def handle_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     if payload.channel_id != CHANNEL_ID:
         return
 
@@ -190,16 +242,43 @@ async def handle_reaction_change(payload: discord.RawReactionActionEvent) -> Non
     if str(payload.emoji) != TARGET_EMOJI:
         return
 
-    tracked = state.get("tracked_messages", {})
-    title = tracked.get(str(payload.message_id))
-    if not title:
+    entry = get_tracked_entry(payload.message_id)
+    if entry is None:
         return
+
+    if payload.user_id not in entry["queue"]:
+        entry["queue"].append(payload.user_id)
+        save_state(state)
 
     channel = await get_target_channel()
     if channel is None:
         return
 
-    await rebuild_one_message(channel, payload.message_id, title)
+    await rebuild_one_message(channel, payload.message_id)
+
+
+async def handle_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
+    if payload.channel_id != CHANNEL_ID:
+        return
+
+    if bot.user and payload.user_id == bot.user.id:
+        return
+
+    if str(payload.emoji) != TARGET_EMOJI:
+        return
+
+    entry = get_tracked_entry(payload.message_id)
+    if entry is None:
+        return
+
+    entry["queue"] = [user_id for user_id in entry["queue"] if user_id != payload.user_id]
+    save_state(state)
+
+    channel = await get_target_channel()
+    if channel is None:
+        return
+
+    await rebuild_one_message(channel, payload.message_id)
 
 
 # =========================
@@ -213,12 +292,12 @@ async def on_ready():
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    await handle_reaction_change(payload)
+    await handle_reaction_add(payload)
 
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    await handle_reaction_change(payload)
+    await handle_reaction_remove(payload)
 
 
 # =========================
@@ -251,6 +330,11 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
     headers = build_headers(hour, bottom_count, middle_count, top_count)
     await create_board(ctx.channel, headers)
 
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
 
 # =========================
 # KOMENDA !clear
@@ -269,10 +353,11 @@ async def clear_command(ctx: commands.Context, amount: int):
     if amount == 0:
         deleted_messages = await clear_entire_channel(ctx.channel, before=ctx.message)
 
+        deleted_ids = {msg.id for msg in deleted_messages}
         state["tracked_messages"] = {
-            msg_id: title
-            for msg_id, title in state.get("tracked_messages", {}).items()
-            if int(msg_id) not in {msg.id for msg in deleted_messages}
+            msg_id: entry
+            for msg_id, entry in state.get("tracked_messages", {}).items()
+            if int(msg_id) not in deleted_ids
         }
         save_state(state)
 
