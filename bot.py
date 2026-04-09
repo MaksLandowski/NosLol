@@ -1,11 +1,9 @@
 import os
 import json
-import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 # =========================
 # KONFIGURACJA
@@ -16,12 +14,6 @@ if not TOKEN:
 
 CHANNEL_ID = 1491695833119199232
 TARGET_EMOJI = "✅"
-HEADERS = [f"Ch{i}" for i in range(1, 8)]
-
-DAILY_HOUR = 18
-DAILY_MINUTE = 0
-TIMEZONE = ZoneInfo("Europe/Warsaw")
-
 STATE_FILE = Path("state.json")
 
 # =========================
@@ -34,8 +26,6 @@ intents.reactions = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-started_once = False
 
 
 # =========================
@@ -68,6 +58,26 @@ def render_message_content(title: str, user_ids: list[int]) -> str:
     for index, user_id in enumerate(user_ids, start=1):
         lines.append(f"{index}. <@{user_id}>")
     return "\n".join(lines)
+
+
+def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
+    formatted_hour = f"{hour:02d}:00"
+    headers: list[str] = []
+    channel_number = 1
+
+    for _ in range(bottom_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} dół")
+        channel_number += 1
+
+    for _ in range(middle_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} środek")
+        channel_number += 1
+
+    for _ in range(top_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} góra")
+        channel_number += 1
+
+    return headers
 
 
 async def get_target_channel() -> discord.TextChannel | None:
@@ -128,10 +138,10 @@ async def rebuild_all_tracked_messages() -> None:
         await rebuild_one_message(channel, int(message_id_str), title)
 
 
-async def create_board(channel: discord.TextChannel) -> None:
+async def create_board(channel: discord.TextChannel, headers: list[str]) -> None:
     state["tracked_messages"] = {}
 
-    for title in HEADERS:
+    for title in headers:
         msg = await channel.send(title)
         await msg.add_reaction(TARGET_EMOJI)
         state["tracked_messages"][str(msg.id)] = title
@@ -139,9 +149,9 @@ async def create_board(channel: discord.TextChannel) -> None:
     save_state(state)
 
 
-async def reset_board(channel: discord.TextChannel) -> None:
+async def reset_board(channel: discord.TextChannel, headers: list[str]) -> None:
     await clear_entire_channel(channel)
-    await create_board(channel)
+    await create_board(channel, headers)
 
 
 async def handle_reaction_change(payload: discord.RawReactionActionEvent) -> None:
@@ -171,16 +181,8 @@ async def handle_reaction_change(payload: discord.RawReactionActionEvent) -> Non
 # =========================
 @bot.event
 async def on_ready():
-    global started_once
-
     print(f"Zalogowano jako: {bot.user} (ID: {bot.user.id})")
-
-    if not daily_reset.is_running():
-        daily_reset.start()
-
-    if not started_once:
-        started_once = True
-        await rebuild_all_tracked_messages()
+    await rebuild_all_tracked_messages()
 
 
 @bot.event
@@ -194,47 +196,42 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 
 # =========================
-# KOMENDA RĘCZNA
+# KOMENDA !lol
 # =========================
-@bot.command(name="odswiez")
+@bot.command(name="lol")
 @commands.has_permissions(manage_messages=True)
-async def odswiez(ctx: commands.Context):
+async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if ctx.channel.id != CHANNEL_ID:
         await ctx.reply(f"Ta komenda działa tylko na kanale <#{CHANNEL_ID}>.")
         return
 
-    await reset_board(ctx.channel)
-
-
-@odswiez.error
-async def odswiez_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("Nie masz uprawnień do użycia tej komendy.")
-    else:
-        await ctx.reply(f"Wystąpił błąd: `{error}`")
-
-
-# =========================
-# AUTOMATYCZNY RESET
-# =========================
-@tasks.loop(
-    time=datetime.time(
-        hour=DAILY_HOUR,
-        minute=DAILY_MINUTE,
-        tzinfo=TIMEZONE
-    )
-)
-async def daily_reset():
-    channel = await get_target_channel()
-    if channel is None:
+    if not (0 <= hour <= 23):
+        await ctx.reply("Godzina musi być z przedziału 0-23.")
         return
 
-    await reset_board(channel)
+    if bottom_count < 0 or middle_count < 0 or top_count < 0:
+        await ctx.reply("Liczby dla dół / środek / góra nie mogą być ujemne.")
+        return
+
+    total = bottom_count + middle_count + top_count
+    if total == 0:
+        await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        return
+
+    headers = build_headers(hour, bottom_count, middle_count, top_count)
+    await reset_board(ctx.channel, headers)
 
 
-@daily_reset.before_loop
-async def before_daily_reset():
-    await bot.wait_until_ready()
+@lol_command.error
+async def lol_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("Nie masz uprawnień do użycia tej komendy.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
+    else:
+        await ctx.reply(f"Wystąpił błąd: `{error}`")
 
 
 # =========================
