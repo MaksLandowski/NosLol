@@ -130,7 +130,7 @@ def render_raid_message_content(title: str, capacity: int, user_ids: list[int]) 
     lines.append("")
     lines.append("Rezerwa:")
 
-    reserve_visible_count = max(2, len(reserve))
+    reserve_visible_count = max(3, len(reserve))
     for index in range(reserve_visible_count):
         if index < len(reserve):
             lines.append(f"{index + 1}. <@{reserve[index]}>")
@@ -155,6 +155,26 @@ def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: in
 
     for _ in range(top_count):
         headers.append(f"LOL {formatted_hour} ch{channel_number} góra (zalecany lvl 48-60)")
+        channel_number += 1
+
+    return headers
+
+
+def build_headers_lol2(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
+    formatted_hour = f"{hour:02d}:00"
+    headers: list[str] = []
+    channel_number = 1
+
+    for _ in range(bottom_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} dół (zalecany lvl 60-68)")
+        channel_number += 1
+
+    for _ in range(middle_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} środek (zalecany lvl 68-73)")
+        channel_number += 1
+
+    for _ in range(top_count):
+        headers.append(f"LOL {formatted_hour} ch{channel_number} góra (zalecany lvl 73-80)")
         channel_number += 1
 
     return headers
@@ -284,7 +304,10 @@ async def rebuild_all_tracked_messages() -> None:
         await rebuild_one_message(channel, int(message_id_str))
 
 
-async def create_board(channel: discord.TextChannel, headers: list[str]) -> None:
+async def create_board(channel: discord.TextChannel, headers: list[str], intro_message: str | None = None) -> None:
+    if intro_message:
+        await channel.send(intro_message)
+
     for title in headers:
         msg = await channel.send(title)
         await msg.add_reaction(TARGET_EMOJI)
@@ -430,7 +453,43 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
         return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
-    await create_board(ctx.channel, headers)
+    await create_board(ctx.channel, headers, intro_message="Zapisy na LOL 30-64")
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+# =========================
+# KOMENDA !lol2
+# =========================
+@bot.command(name="lol2")
+@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
+async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
+    if ctx.channel.name != LOL_CHANNEL_NAME:
+        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL_CHANNEL_NAME}.")
+        return
+
+    if not (0 <= hour <= 23):
+        await ctx.reply("Godzina musi być z przedziału 0-23.")
+        return
+
+    if bottom_count < 0 or middle_count < 0 or top_count < 0:
+        await ctx.reply("Liczby dla dół / środek / góra nie mogą być ujemne.")
+        return
+
+    total = bottom_count + middle_count + top_count
+    if total == 0:
+        await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        return
+
+    if total > 7:
+        await ctx.reply("Maksymalna ilość kanałów to 7.")
+        return
+
+    headers = build_headers_lol2(hour, bottom_count, middle_count, top_count)
+    await create_board(ctx.channel, headers, intro_message="Zapisy na zaawansowany LOL 60-82")
 
     try:
         await ctx.message.delete()
@@ -516,6 +575,18 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
+    else:
+        await ctx.reply(f"Wystąpił błąd: `{error}`")
+
+
+@lol2_command.error
+async def lol2_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.MissingAnyRole):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("Użycie: `!lol2 <godzina> <dół> <środek> <góra>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol2 19 3 2 1`")
     else:
         await ctx.reply(f"Wystąpił błąd: `{error}`")
 
