@@ -6,11 +6,11 @@ import discord
 from discord.ext import commands
 
 # =========================
-# KONFIGURACJA
+# CONFIGURATION
 # =========================
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
+    raise RuntimeError("Missing DISCORD_TOKEN environment variable")
 
 LOL_CHANNEL_NAME = "lol"
 LOL2_CHANNEL_NAME = "lol60"
@@ -19,16 +19,18 @@ RAID_CHANNEL_NAME = "rajdy"
 CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
 TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
 
-
 ALLOWED_ROLE_NAMES = [
     "lol",
     "lol2",
     "rajd",
 ]
 
+CLEAR_ALLOWED_ROLE_NAME = "smietnik"
+
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
 MAX_VISIBLE_USERS = 5
+MAX_CHANNELS = 7
 
 # =========================
 # INTENTS
@@ -42,7 +44,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
-# PLIK STANU
+# STATE FILE
 # =========================
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -63,11 +65,16 @@ def save_state(state: dict) -> None:
 state = load_state()
 
 # =========================
-# POMOCNICZE
+# HELPERS
 # =========================
 def has_allowed_role(member: discord.Member) -> bool:
     user_role_names = {role.name for role in member.roles}
     return any(role_name in user_role_names for role_name in ALLOWED_ROLE_NAMES)
+
+
+def has_clear_role(member: discord.Member) -> bool:
+    user_role_names = {role.name for role in member.roles}
+    return CLEAR_ALLOWED_ROLE_NAME in user_role_names
 
 
 def get_tracked_entry(message_id: int) -> dict | None:
@@ -79,8 +86,8 @@ def get_tracked_entry(message_id: int) -> dict | None:
 
     changed = False
 
-    # migracja ze starego formatu:
-    # "123456789": "LOL 19:00 ch1 dół ..."
+    # migration from old format:
+    # "123456789": "LOL 19:00 ch1 bottom ..."
     if isinstance(entry, str):
         entry = {
             "mode": "lol",
@@ -132,7 +139,7 @@ def render_raid_message_content(title: str, capacity: int, user_ids: list[int]) 
     squad = user_ids[:capacity]
     reserve = user_ids[capacity:]
 
-    lines = [title, "", "Skład:"]
+    lines = [title, "", "Squad:"]
 
     for index in range(capacity):
         if index < len(squad):
@@ -141,7 +148,7 @@ def render_raid_message_content(title: str, capacity: int, user_ids: list[int]) 
             lines.append(f"{index + 1}.")
 
     lines.append("")
-    lines.append("Rezerwa:")
+    lines.append("Reserve:")
 
     reserve_visible_count = max(3, len(reserve))
     for index in range(reserve_visible_count):
@@ -153,22 +160,52 @@ def render_raid_message_content(title: str, capacity: int, user_ids: list[int]) 
     return "\n".join(lines)
 
 
+def validate_lol_counts(bottom_count: int, middle_count: int, top_count: int) -> str | None:
+    if bottom_count + middle_count > MAX_CHANNELS:
+        return f"The total number of channels for bottom + middle cannot exceed {MAX_CHANNELS}."
+
+    if middle_count + top_count > MAX_CHANNELS:
+        return f"The total number of channels for middle + top cannot exceed {MAX_CHANNELS}."
+
+    return None
+
+
+def build_channel_numbers(
+    bottom_count: int,
+    middle_count: int,
+    top_count: int
+) -> tuple[list[int], list[int], list[int]]:
+    bottom_channels = list(range(1, bottom_count + 1))
+
+    middle_start = bottom_count + 1
+    middle_channels = list(range(middle_start, middle_start + middle_count))
+
+    top_channels: list[int] = []
+    top_start = bottom_count + middle_count + 1
+
+    for offset in range(top_count):
+        channel_number = ((top_start + offset - 1) % MAX_CHANNELS) + 1
+        top_channels.append(channel_number)
+
+    return bottom_channels, middle_channels, top_channels
+
+
 def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
     formatted_hour = f"{hour:02d}:00"
     headers: list[str] = []
-    channel_number = 1
 
-    for _ in range(bottom_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} dół (zalecany lvl 30-40)")
-        channel_number += 1
+    bottom_channels, middle_channels, top_channels = build_channel_numbers(
+        bottom_count, middle_count, top_count
+    )
 
-    for _ in range(middle_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} środek (zalecany lvl 38-50)")
-        channel_number += 1
+    for channel_number in bottom_channels:
+        headers.append(f"LOL {formatted_hour} ch{channel_number} bottom (recommended lvl 30-40)")
 
-    for _ in range(top_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} góra (zalecany lvl 48-60)")
-        channel_number += 1
+    for channel_number in middle_channels:
+        headers.append(f"LOL {formatted_hour} ch{channel_number} middle (recommended lvl 38-50)")
+
+    for channel_number in top_channels:
+        headers.append(f"LOL {formatted_hour} ch{channel_number} top (recommended lvl 48-60)")
 
     return headers
 
@@ -176,24 +213,27 @@ def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: in
 def build_headers_lol2(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
     formatted_hour = f"{hour:02d}:00"
     headers: list[str] = []
-    channel_number = 1
 
-    for _ in range(bottom_count):
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} dół (zalecany lvl 60-68)")
-        channel_number += 1
+    bottom_channels, middle_channels, top_channels = build_channel_numbers(
+        bottom_count, middle_count, top_count
+    )
 
-    for _ in range(middle_count):
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} środek (zalecany lvl 68-73)")
-        channel_number += 1
+    for channel_number in bottom_channels:
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} bottom (recommended lvl 60-68)")
 
-    for _ in range(top_count):
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} góra (zalecany lvl 73-80)")
-        channel_number += 1
+    for channel_number in middle_channels:
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} middle (recommended lvl 68-73)")
+
+    for channel_number in top_channels:
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} top (recommended lvl 73-80)")
 
     return headers
 
 
-async def get_target_channel(channel_name: str, guild: discord.Guild | None = None) -> discord.TextChannel | None:
+async def get_target_channel(
+    channel_name: str,
+    guild: discord.Guild | None = None
+) -> discord.TextChannel | None:
     if guild is not None:
         return discord.utils.get(guild.text_channels, name=channel_name)
 
@@ -314,7 +354,11 @@ async def rebuild_all_tracked_messages() -> None:
         await rebuild_one_message(channel, int(message_id_str))
 
 
-async def create_board(channel: discord.TextChannel, headers: list[str], intro_message: str | None = None) -> None:
+async def create_board(
+    channel: discord.TextChannel,
+    headers: list[str],
+    intro_message: str | None = None
+) -> None:
     if intro_message:
         await channel.send(intro_message)
 
@@ -333,7 +377,7 @@ async def create_board(channel: discord.TextChannel, headers: list[str], intro_m
 
 
 async def create_raid(channel: discord.TextChannel, capacity: int) -> None:
-    title = f"RAJD ({capacity} osób)"
+    title = f"RAID ({capacity} people)"
     content = render_raid_message_content(title, capacity, [])
 
     msg = await channel.send(content)
@@ -349,7 +393,9 @@ async def create_raid(channel: discord.TextChannel, capacity: int) -> None:
     save_state(state)
 
 
-async def resolve_payload_text_channel(payload: discord.RawReactionActionEvent) -> discord.TextChannel | None:
+async def resolve_payload_text_channel(
+    payload: discord.RawReactionActionEvent
+) -> discord.TextChannel | None:
     channel = bot.get_channel(payload.channel_id)
 
     if not isinstance(channel, discord.TextChannel):
@@ -415,11 +461,11 @@ async def handle_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
 
 
 # =========================
-# EVENTY
+# EVENTS
 # =========================
 @bot.event
 async def on_ready():
-    print(f"Zalogowano jako: {bot.user} (ID: {bot.user.id})")
+    print(f"Logged in as: {bot.user} (ID: {bot.user.id})")
     await rebuild_all_tracked_messages()
 
 
@@ -434,37 +480,38 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 
 # =========================
-# KOMENDA !lol
+# COMMAND !lol
 # =========================
 @bot.command(name="lol")
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if not has_allowed_role(ctx.author):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        await ctx.reply("You do not have the required role to use this command.")
         return
 
     if ctx.channel.name != LOL_CHANNEL_NAME:
-        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL_CHANNEL_NAME}.")
+        await ctx.reply(f"This command only works in the #{LOL_CHANNEL_NAME} channel.")
         return
 
     if not (0 <= hour <= 23):
-        await ctx.reply("Godzina musi być z przedziału 0-23.")
+        await ctx.reply("Hour must be between 0 and 23.")
         return
 
     if bottom_count < 0 or middle_count < 0 or top_count < 0:
-        await ctx.reply("Liczby dla dół / środek / góra nie mogą być ujemne.")
+        await ctx.reply("The values for bottom / middle / top cannot be negative.")
         return
 
     total = bottom_count + middle_count + top_count
     if total == 0:
-        await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        await ctx.reply("All values are 0, so there is nothing to create.")
         return
 
-    if total > 7:
-        await ctx.reply("Maksymalna ilość kanałów to 7.")
+    validation_error = validate_lol_counts(bottom_count, middle_count, top_count)
+    if validation_error is not None:
+        await ctx.reply(validation_error)
         return
 
     headers = build_headers(hour, bottom_count, middle_count, top_count)
-    await create_board(ctx.channel, headers, intro_message="Zapisy na LOL 30-64")
+    await create_board(ctx.channel, headers, intro_message="Sign-ups for LOL 30-64")
 
     try:
         await ctx.message.delete()
@@ -473,37 +520,38 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 
 
 # =========================
-# KOMENDA !lol2
+# COMMAND !lol2
 # =========================
 @bot.command(name="lol2")
 async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if not has_allowed_role(ctx.author):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        await ctx.reply("You do not have the required role to use this command.")
         return
 
     if ctx.channel.name != LOL2_CHANNEL_NAME:
-        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL2_CHANNEL_NAME}.")
+        await ctx.reply(f"This command only works in the #{LOL2_CHANNEL_NAME} channel.")
         return
 
     if not (0 <= hour <= 23):
-        await ctx.reply("Godzina musi być z przedziału 0-23.")
+        await ctx.reply("Hour must be between 0 and 23.")
         return
 
     if bottom_count < 0 or middle_count < 0 or top_count < 0:
-        await ctx.reply("Liczby dla dół / środek / góra nie mogą być ujemne.")
+        await ctx.reply("The values for bottom / middle / top cannot be negative.")
         return
 
     total = bottom_count + middle_count + top_count
     if total == 0:
-        await ctx.reply("Wszystkie wartości są 0, więc nic nie robię.")
+        await ctx.reply("All values are 0, so there is nothing to create.")
         return
 
-    if total > 7:
-        await ctx.reply("Maksymalna ilość kanałów to 7.")
+    validation_error = validate_lol_counts(bottom_count, middle_count, top_count)
+    if validation_error is not None:
+        await ctx.reply(validation_error)
         return
 
     headers = build_headers_lol2(hour, bottom_count, middle_count, top_count)
-    await create_board(ctx.channel, headers, intro_message="Zapisy na zaawansowany LOL2 60-82")
+    await create_board(ctx.channel, headers, intro_message="Sign-ups for advanced LOL2 60-82")
 
     try:
         await ctx.message.delete()
@@ -512,20 +560,20 @@ async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, midd
 
 
 # =========================
-# KOMENDA !rajd
+# COMMAND !rajd
 # =========================
 @bot.command(name="rajd")
 async def rajd_command(ctx: commands.Context, capacity: int):
     if not has_allowed_role(ctx.author):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        await ctx.reply("You do not have the required role to use this command.")
         return
 
     if ctx.channel.name != RAID_CHANNEL_NAME:
-        await ctx.reply(f"Ta komenda działa tylko na kanale #{RAID_CHANNEL_NAME}.")
+        await ctx.reply(f"This command only works in the #{RAID_CHANNEL_NAME} channel.")
         return
 
     if not (8 <= capacity <= 20):
-        await ctx.reply("Liczba osób dla `!rajd` musi być z przedziału 8-20.")
+        await ctx.reply("The number of players for `!rajd` must be between 8 and 20.")
         return
 
     await create_raid(ctx.channel, capacity)
@@ -537,21 +585,21 @@ async def rajd_command(ctx: commands.Context, capacity: int):
 
 
 # =========================
-# KOMENDA !clear
+# COMMAND !clear
 # =========================
 @bot.command(name="clear")
 async def clear_command(ctx: commands.Context, amount: int):
-    if not has_allowed_role(ctx.author):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+    if not has_clear_role(ctx.author):
+        await ctx.reply(f"Only users with the `{CLEAR_ALLOWED_ROLE_NAME}` role can use this command.")
         return
 
     if ctx.channel.name not in CLEAR_CHANNEL_NAMES:
         allowed = ", ".join(f"#{name}" for name in sorted(CLEAR_CHANNEL_NAMES))
-        await ctx.reply(f"Ta komenda działa tylko na kanałach: {allowed}.")
+        await ctx.reply(f"This command only works in these channels: {allowed}.")
         return
 
     if amount < 0:
-        await ctx.reply("Podaj liczbę 0 lub większą.")
+        await ctx.reply("Please provide a number equal to or greater than 0.")
         return
 
     if amount == 0:
@@ -585,46 +633,46 @@ async def clear_command(ctx: commands.Context, amount: int):
 
 
 # =========================
-# OBSŁUGA BŁĘDÓW
+# ERROR HANDLING
 # =========================
 @lol_command.error
 async def lol_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
+        await ctx.reply("Usage: `!lol <hour> <bottom> <middle> <top>`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
+        await ctx.reply("All parameters must be numbers. Example: `!lol 19 3 2 1`")
     else:
-        await ctx.reply(f"Wystąpił błąd: `{error}`")
+        await ctx.reply(f"An error occurred: `{error}`")
 
 
 @lol2_command.error
 async def lol2_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Użycie: `!lol2 <godzina> <dół> <środek> <góra>`")
+        await ctx.reply("Usage: `!lol2 <hour> <bottom> <middle> <top>`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol2 19 3 2 1`")
+        await ctx.reply("All parameters must be numbers. Example: `!lol2 19 3 2 1`")
     else:
-        await ctx.reply(f"Wystąpił błąd: `{error}`")
+        await ctx.reply(f"An error occurred: `{error}`")
 
 
 @rajd_command.error
 async def rajd_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Użycie: `!rajd <liczba>`\nPrzykład: `!rajd 12`")
+        await ctx.reply("Usage: `!rajd <number>`\nExample: `!rajd 12`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!rajd 12`")
+        await ctx.reply("The parameter must be an integer. Example: `!rajd 12`")
     else:
-        await ctx.reply(f"Wystąpił błąd: `{error}`")
+        await ctx.reply(f"An error occurred: `{error}`")
 
 
 @clear_command.error
 async def clear_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Użycie: `!clear <liczba>`\nPrzykład: `!clear 10` albo `!clear 0`")
+        await ctx.reply("Usage: `!clear <number>`\nExample: `!clear 10` or `!clear 0`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!clear 25`")
+        await ctx.reply("The parameter must be an integer. Example: `!clear 25`")
     else:
-        await ctx.reply(f"Wystąpił błąd: `{error}`")
+        await ctx.reply(f"An error occurred: `{error}`")
 
 
 # =========================
