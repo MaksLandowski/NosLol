@@ -13,15 +13,15 @@ if not TOKEN:
     raise RuntimeError("Missing DISCORD_TOKEN environment variable")
 
 LOL_CHANNEL_NAME = "lol"
-LOL2_CHANNEL_NAME = "lol60"
+LOL60_CHANNEL_NAME = "lol60"
 RAID_CHANNEL_NAME = "rajdy"
 
-CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
-TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
+CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL60_CHANNEL_NAME, RAID_CHANNEL_NAME}
+TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL60_CHANNEL_NAME, RAID_CHANNEL_NAME}
 
 ALLOWED_ROLE_NAMES = [
     "lol",
-    "lol2",
+    "lol60",
     "rajd",
 ]
 
@@ -210,7 +210,7 @@ def build_headers(hour: int, bottom_count: int, middle_count: int, top_count: in
     return headers
 
 
-def build_headers_lol2(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
+def build_headers_lol60(hour: int, bottom_count: int, middle_count: int, top_count: int) -> list[str]:
     formatted_hour = f"{hour:02d}:00"
     headers: list[str] = []
 
@@ -219,13 +219,13 @@ def build_headers_lol2(hour: int, bottom_count: int, middle_count: int, top_coun
     )
 
     for channel_number in bottom_channels:
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} bottom (recommended lvl 60-68)")
+        headers.append(f"LOL60 {formatted_hour} ch{channel_number} bottom (recommended lvl 60-68)")
 
     for channel_number in middle_channels:
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} middle (recommended lvl 68-73)")
+        headers.append(f"LOL60 {formatted_hour} ch{channel_number} middle (recommended lvl 68-73)")
 
     for channel_number in top_channels:
-        headers.append(f"LOL2 {formatted_hour} ch{channel_number} top (recommended lvl 73-80)")
+        headers.append(f"LOL60 {formatted_hour} ch{channel_number} top (recommended lvl 73-80)")
 
     return headers
 
@@ -520,16 +520,16 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 
 
 # =========================
-# COMMAND !lol2
+# COMMAND !lol60
 # =========================
-@bot.command(name="lol2")
-async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
+@bot.command(name="lol60")
+async def lol60_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
     if not has_allowed_role(ctx.author):
         await ctx.reply("You do not have the required role to use this command.")
         return
 
-    if ctx.channel.name != LOL2_CHANNEL_NAME:
-        await ctx.reply(f"This command only works in the #{LOL2_CHANNEL_NAME} channel.")
+    if ctx.channel.name != LOL60_CHANNEL_NAME:
+        await ctx.reply(f"This command only works in the #{LOL60_CHANNEL_NAME} channel.")
         return
 
     if not (0 <= hour <= 23):
@@ -550,8 +550,8 @@ async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, midd
         await ctx.reply(validation_error)
         return
 
-    headers = build_headers_lol2(hour, bottom_count, middle_count, top_count)
-    await create_board(ctx.channel, headers, intro_message="Sign-ups for advanced LOL2 60-82")
+    headers = build_headers_lol60(hour, bottom_count, middle_count, top_count)
+    await create_board(ctx.channel, headers, intro_message="Sign-ups for advanced LOL 60-82")
 
     try:
         await ctx.message.delete()
@@ -645,12 +645,12 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
         await ctx.reply(f"An error occurred: `{error}`")
 
 
-@lol2_command.error
-async def lol2_command_error(ctx: commands.Context, error: Exception):
+@lol60_command.error
+async def lol60_command_error(ctx: commands.Context, error: Exception):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("Usage: `!lol2 <hour> <bottom> <middle> <top>`")
+        await ctx.reply("Usage: `!lol60 <hour> <bottom> <middle> <top>`")
     elif isinstance(error, commands.BadArgument):
-        await ctx.reply("All parameters must be numbers. Example: `!lol2 19 3 2 1`")
+        await ctx.reply("All parameters must be numbers. Example: `!lol60 19 3 2 1`")
     else:
         await ctx.reply(f"An error occurred: `{error}`")
 
