@@ -12,14 +12,19 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("Brak zmiennej środowiskowej DISCORD_TOKEN")
 
-LOL_CHANNEL_NAME = "zapisy-lol-tylko"
+LOL_CHANNEL_NAME = "LOL"
+LOL2_CHANNEL_NAME = "LOL2"
 RAID_CHANNEL_NAME = "rajdy"
-CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, RAID_CHANNEL_NAME}
-TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, RAID_CHANNEL_NAME}
 
-ALLOWED_ROLE_ID = 1489240048510570766
-ALLOWED_ROLE_ID_2 = 1489244935260475402
-ALLOWED_ROLE_ID_3 = 1491816058967953478
+CLEAR_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
+TRACKED_CHANNEL_NAMES = {LOL_CHANNEL_NAME, LOL2_CHANNEL_NAME, RAID_CHANNEL_NAME}
+
+
+ALLOWED_ROLE_NAMES = [
+    "lol",
+    "lol2",
+    "rajd",
+]
 
 TARGET_EMOJI = "✅"
 STATE_FILE = Path("state.json")
@@ -60,6 +65,11 @@ state = load_state()
 # =========================
 # POMOCNICZE
 # =========================
+def has_allowed_role(member: discord.Member) -> bool:
+    user_role_names = {role.name for role in member.roles}
+    return any(role_name in user_role_names for role_name in ALLOWED_ROLE_NAMES)
+
+
 def get_tracked_entry(message_id: int) -> dict | None:
     tracked = state.setdefault("tracked_messages", {})
     entry = tracked.get(str(message_id))
@@ -94,7 +104,10 @@ def get_tracked_entry(message_id: int) -> dict | None:
         changed = True
 
     if "channel_name" not in entry:
-        entry["channel_name"] = LOL_CHANNEL_NAME if entry["mode"] == "lol" else RAID_CHANNEL_NAME
+        if entry["mode"] == "rajd":
+            entry["channel_name"] = RAID_CHANNEL_NAME
+        else:
+            entry["channel_name"] = LOL_CHANNEL_NAME
         changed = True
 
     if entry["mode"] == "rajd":
@@ -166,15 +179,15 @@ def build_headers_lol2(hour: int, bottom_count: int, middle_count: int, top_coun
     channel_number = 1
 
     for _ in range(bottom_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} dół (zalecany lvl 60-68)")
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} dół (zalecany lvl 60-68)")
         channel_number += 1
 
     for _ in range(middle_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} środek (zalecany lvl 68-73)")
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} środek (zalecany lvl 68-73)")
         channel_number += 1
 
     for _ in range(top_count):
-        headers.append(f"LOL {formatted_hour} ch{channel_number} góra (zalecany lvl 73-80)")
+        headers.append(f"LOL2 {formatted_hour} ch{channel_number} góra (zalecany lvl 73-80)")
         channel_number += 1
 
     return headers
@@ -259,11 +272,8 @@ async def rebuild_one_message(channel: discord.TextChannel, message_id: int) -> 
 
     actual_user_ids = await get_actual_reaction_users(message)
 
-    # zostawiamy tylko osoby, które nadal mają reakcję
     queue = [user_id for user_id in entry["queue"] if user_id in actual_user_ids]
 
-    # jeśli ktoś ma reakcję, ale nie ma go jeszcze w kolejce,
-    # dopinamy go na końcu
     for user_id in actual_user_ids:
         if user_id not in queue:
             queue.append(user_id)
@@ -370,7 +380,6 @@ async def handle_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     if entry is None:
         return
 
-    # dodatkowe zabezpieczenie: reakcja musi być na wiadomości z właściwego kanału
     if entry.get("channel_name") != channel.name:
         return
 
@@ -396,7 +405,6 @@ async def handle_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
     if entry is None:
         return
 
-    # dodatkowe zabezpieczenie: reakcja musi być na wiadomości z właściwego kanału
     if entry.get("channel_name") != channel.name:
         return
 
@@ -429,8 +437,11 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # KOMENDA !lol
 # =========================
 @bot.command(name="lol")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
+    if not has_allowed_role(ctx.author):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        return
+
     if ctx.channel.name != LOL_CHANNEL_NAME:
         await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL_CHANNEL_NAME}.")
         return
@@ -465,10 +476,13 @@ async def lol_command(ctx: commands.Context, hour: int, bottom_count: int, middl
 # KOMENDA !lol2
 # =========================
 @bot.command(name="lol2")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, middle_count: int, top_count: int):
-    if ctx.channel.name != LOL_CHANNEL_NAME:
-        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL_CHANNEL_NAME}.")
+    if not has_allowed_role(ctx.author):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        return
+
+    if ctx.channel.name != LOL2_CHANNEL_NAME:
+        await ctx.reply(f"Ta komenda działa tylko na kanale #{LOL2_CHANNEL_NAME}.")
         return
 
     if not (0 <= hour <= 23):
@@ -489,7 +503,7 @@ async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, midd
         return
 
     headers = build_headers_lol2(hour, bottom_count, middle_count, top_count)
-    await create_board(ctx.channel, headers, intro_message="Zapisy na zaawansowany LOL 60-82")
+    await create_board(ctx.channel, headers, intro_message="Zapisy na zaawansowany LOL2 60-82")
 
     try:
         await ctx.message.delete()
@@ -501,8 +515,11 @@ async def lol2_command(ctx: commands.Context, hour: int, bottom_count: int, midd
 # KOMENDA !rajd
 # =========================
 @bot.command(name="rajd")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def rajd_command(ctx: commands.Context, capacity: int):
+    if not has_allowed_role(ctx.author):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        return
+
     if ctx.channel.name != RAID_CHANNEL_NAME:
         await ctx.reply(f"Ta komenda działa tylko na kanale #{RAID_CHANNEL_NAME}.")
         return
@@ -523,8 +540,11 @@ async def rajd_command(ctx: commands.Context, capacity: int):
 # KOMENDA !clear
 # =========================
 @bot.command(name="clear")
-@commands.has_any_role(ALLOWED_ROLE_ID, ALLOWED_ROLE_ID_2, ALLOWED_ROLE_ID_3)
 async def clear_command(ctx: commands.Context, amount: int):
+    if not has_allowed_role(ctx.author):
+        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
+        return
+
     if ctx.channel.name not in CLEAR_CHANNEL_NAMES:
         allowed = ", ".join(f"#{name}" for name in sorted(CLEAR_CHANNEL_NAMES))
         await ctx.reply(f"Ta komenda działa tylko na kanałach: {allowed}.")
@@ -569,9 +589,7 @@ async def clear_command(ctx: commands.Context, amount: int):
 # =========================
 @lol_command.error
 async def lol_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingAnyRole):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
-    elif isinstance(error, commands.MissingRequiredArgument):
+    if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!lol <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol 19 3 2 1`")
@@ -581,9 +599,7 @@ async def lol_command_error(ctx: commands.Context, error: Exception):
 
 @lol2_command.error
 async def lol2_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingAnyRole):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
-    elif isinstance(error, commands.MissingRequiredArgument):
+    if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!lol2 <godzina> <dół> <środek> <góra>`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Wszystkie parametry muszą być liczbami. Przykład: `!lol2 19 3 2 1`")
@@ -593,9 +609,7 @@ async def lol2_command_error(ctx: commands.Context, error: Exception):
 
 @rajd_command.error
 async def rajd_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingAnyRole):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
-    elif isinstance(error, commands.MissingRequiredArgument):
+    if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!rajd <liczba>`\nPrzykład: `!rajd 12`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!rajd 12`")
@@ -605,9 +619,7 @@ async def rajd_command_error(ctx: commands.Context, error: Exception):
 
 @clear_command.error
 async def clear_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.MissingAnyRole):
-        await ctx.reply("Nie masz wymaganej roli do użycia tej komendy.")
-    elif isinstance(error, commands.MissingRequiredArgument):
+    if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Użycie: `!clear <liczba>`\nPrzykład: `!clear 10` albo `!clear 0`")
     elif isinstance(error, commands.BadArgument):
         await ctx.reply("Parametr musi być liczbą całkowitą. Przykład: `!clear 25`")
