@@ -684,6 +684,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from discord.ext import tasks
+import aiohttp
 
 LOBBY_CATEGORY = os.getenv('LOL_LOBBY_CATEGORY', 'Land of Life')
 CREATE_CHANNEL = 'create-lol'
@@ -699,6 +700,42 @@ CLASSES = {
     'Martial Artist': ('🥊', ['MartialArtist','Draconicfist','Mysticarts','Masterwolf','Demonwarrior']),
     'Any / flexible': ('❓', ['Any / flexible']),
 }
+# Icons verified on NosApki item pages (image IDs, not item IDs).
+# NosTale artwork: Gameforge / Entwell; source: https://nosapki.com/en/items?category=specialist
+SP_ICON_IDS = {
+    'Warrior':901, 'Ninja':902, 'Crusader':909, 'Berserker':910,
+    'Gladiator':2544, 'Battlemonk':2588, 'Deathreaper':2654, 'Renegade':2706,
+    'Waterfallberserker':4496, 'Dragonknight':4862, 'Stonebreaker':7138,
+    'Ranger':903, 'Assassin':904, 'Destroyer':911, 'Wildkeeper':912,
+    'Firecannoneer':2545, 'Scout':2589, 'Demonhunter':2655, 'Avengingangel':2707,
+    'Sunchaser':4494, 'Blaster':4860, 'Foghunter':7139,
+    'Redmage':905, 'Holymage':906, 'Bluemagician':913, 'Darkgunner':914,
+    'Vulcano':2546, 'Tidelord':2590, 'Seer':2656, 'Archmage':2708,
+    'Voodoo':4497, 'Gravity':4863, 'Firestorm':7140,
+    'Draconicfist':4048, 'Mysticarts':4093, 'Masterwolf':4126, 'Demonwarrior':4151,
+}
+CLASS_ICON_IDS = {'Swordsman':1, 'Archer':2, 'Mage':3, 'MartialArtist':4}
+ICON_URLS = {
+    **{name: f'https://nosapki.com/images/icons/{number}.png' for name, number in SP_ICON_IDS.items()},
+    **{name: f'https://nosapki.com/images/nt-images/class_{number}.png' for name, number in CLASS_ICON_IDS.items()},
+}
+CLASS_BASE = {'Martial Artist': 'MartialArtist'}
+app_icons = {}
+icon_lock = asyncio.Lock()
+
+def icon_name(spec):
+    return 'nt_' + spec.lower().replace(' ', '')
+
+def character_icon(group, spec):
+    return app_icons.get(icon_name(spec)) or app_icons.get(icon_name(CLASS_BASE.get(group, group))) or CLASSES[group][0]
+
+async def load_app_icons():
+    # Application emojis persist in Discord, independent of parties.json.
+    emojis = await bot.fetch_application_emojis()
+    app_icons.clear()
+    app_icons.update({e.name: discord.PartialEmoji(name=e.name, id=e.id, animated=e.animated)
+                      for e in emojis if e.name in {icon_name(s) for s in ICON_URLS}})
+
 NO_MENTIONS = discord.AllowedMentions.none()
 party_lock = asyncio.Lock()
 log = logging.getLogger('lol_lobby')
@@ -754,12 +791,18 @@ def party_embed(p):
         else:
             x = p['players'][i]
             crown = '👑 ' if x['id'] == p['leader'] else ''
-            lines.append(f'{i+1}. {crown}{CLASSES[x["class"]][0]} **{x["spec"]}** <@{x["id"]}>')
+            lines.append(f'{i+1}. {crown}{character_icon(x["class"], x["spec"])} **{x["spec"]}** <@{x["id"]}>')
     e.add_field(name='Slots', value='\n'.join(lines), inline=False)
     if p['bench']:
-        bench = [f'{i+1}. {CLASSES[x["class"]][0]} {x["spec"]} <@{x["id"]}>' for i,x in enumerate(p['bench'][:12])]
-        if len(p['bench']) > 12:
-            bench.append(f'+ {len(p["bench"])-12} more')
+        bench = []
+        for i, x in enumerate(p['bench'][:12]):
+            line = f'{i+1}. {character_icon(x["class"], x["spec"])} {x["spec"]} <@{x["id"]}>'
+            # Custom emoji markup counts towards Discord's 1024-character field limit.
+            if len('\n'.join(bench + [line])) > 990:
+                break
+            bench.append(line)
+        if len(p['bench']) > len(bench):
+            bench.append(f'+ {len(p["bench"])-len(bench)} more')
         e.add_field(name='🪑 Bench', value='\n'.join(bench), inline=False)
     e.add_field(name='📝 Notes', value=p['notes'] or 'None', inline=False)
     e.set_footer(text=f'Party ID {p["channel_id"]} · automatically closes after the run')
@@ -776,7 +819,7 @@ async def get_lobby_channel(p):
 async def refresh_party(p):
     ch = await get_lobby_channel(p)
     msg = await ch.fetch_message(p['message_id'])
-    await msg.edit(embed=party_embed(p), allowed_mentions=NO_MENTIONS)
+    await msg.edit(embed=party_embed(p), view=PartyView(), allowed_mentions=NO_MENTIONS)
 
 async def close_party(p):
     try:
@@ -818,8 +861,12 @@ class ActionButton(discord.ui.Button):
         await self.action(interaction)
 
 class Choice(discord.ui.Select):
-    def __init__(self, placeholder, values, action, *, row=0, default=None):
-        options = [discord.SelectOption(label=str(v), value=str(v), default=str(v)==str(default)) for v in values]
+    def __init__(self, placeholder, values, action, *, row=0, default=None,
+                 label_for=None, emoji_for=None, description_for=None):
+        options = [discord.SelectOption(
+            label=label_for(v) if label_for else str(v), value=str(v),
+            default=str(v)==str(default), emoji=emoji_for(v) if emoji_for else None,
+            description=description_for(v) if description_for else None) for v in values]
         super().__init__(placeholder=placeholder, options=options, row=row, min_values=1, max_values=1)
         self.action = action
     async def callback(self, interaction):
@@ -829,7 +876,9 @@ class SpecView(SafeView):
     def __init__(self, group, channel_id):
         super().__init__(timeout=180)
         self.group, self.channel_id = group, channel_id
-        self.add_item(Choice('Select your subclass / character', CLASSES[group][1], self.choose))
+        self.add_item(Choice('Select your subclass / character', CLASSES[group][1], self.choose,
+                             emoji_for=lambda spec: character_icon(group, spec),
+                             description_for=lambda spec: f'{group} · {spec}'))
     async def choose(self, i, spec):
         await i.response.defer(ephemeral=True, thinking=True)
         async with party_lock:
@@ -840,10 +889,10 @@ class SpecView(SafeView):
             x = find_player(p, uid)
             if x:
                 x.update(player(uid, self.group, spec))
-                result = f'✅ Your character is now **{spec}**.'
+                result = f'✅ Your character is now {character_icon(self.group, spec)} **{spec}**.'
             elif len(p['players']) < p['capacity']:
                 p['players'].append(player(uid, self.group, spec))
-                result = f'✅ You joined as **{spec}**!'
+                result = f'✅ You joined as {character_icon(self.group, spec)} **{spec}**!'
             else:
                 return await private(i, 'Party is full. Use **Bench**, then choose your class.')
             save_parties()
@@ -876,8 +925,8 @@ class PartyView(SafeView):
                     return await private(i, 'This party is no longer available.')
                 if group == 'Any / flexible':
                     return await SpecView(group, i.channel_id).choose(i, group)
-                await i.response.send_message(f'{CLASSES[group][0]} **{group}** Select your subclass / character:', view=SpecView(group, i.channel_id), ephemeral=True)
-            self.add_item(ActionButton(group, f'lolv2:class:{index}', choose, row=0, style=discord.ButtonStyle.primary, emoji=emoji))
+                await i.response.send_message(f'{character_icon(group, CLASS_BASE.get(group, group))} **{group}** Select your subclass / character:', view=SpecView(group, i.channel_id), ephemeral=True)
+            self.add_item(ActionButton(group, f'lolv2:class:{index}', choose, row=0, style=discord.ButtonStyle.primary, emoji=character_icon(group, CLASS_BASE.get(group, group))))
         for label, key, emoji in [('Leave','leave','🚪'),('Bench','bench','🪑'),('Leave Bench','unbench','❌'),('Ping party','ping','🔔'),('Note','note','📝')]:
             async def action(i, key=key):
                 await self.handle(i, key)
@@ -978,14 +1027,15 @@ class CreateView(SafeView):
         self.capacity = '6'
         self.area = 'Any'
         for row,(attr,label,choices) in enumerate([
-            ('game_channel','Select in-game channel (CH 1)',range(1,MAX_CHANNELS+1)),
+            ('game_channel','Select in-game channel (CH1)',range(1,MAX_CHANNELS+1)),
             ('level','Select level range',LEVELS.keys()),
             ('capacity','Select party size',range(3,7)),
             ('area','Select exping area',['Any','Bottom','Middle','Top'])]):
             async def choose(i, value, attr=attr):
                 setattr(self, attr, value)
                 await i.response.defer()
-            self.add_item(Choice(label, choices, choose, row=row, default=getattr(self, attr)))
+            self.add_item(Choice(label, choices, choose, row=row, default=getattr(self, attr),
+                                 label_for=(lambda v: f'CH{v}') if attr == 'game_channel' else None))
         self.add_item(ActionButton('Create the final party','lolv2:create', self.create, row=4, style=discord.ButtonStyle.success, emoji='🚀'))
     async def create(self,i):
         await i.response.defer(ephemeral=True, thinking=True)
@@ -1058,6 +1108,75 @@ class LevelView(SafeView):
                     await private(i, f'✅ Your level range is now **{level}**.')
             self.add_item(ActionButton(level, f'lolv2:level:{level}', select, row=index//4, emoji=emoji, style=discord.ButtonStyle.primary))
 
+@bot.command(name='setup-icons')
+@commands.guild_only()
+@commands.has_guild_permissions(administrator=True)
+async def setup_icons(ctx):
+    # Explicit admin-only import. Safe to repeat: only missing emojis are created.
+    if icon_lock.locked():
+        return await ctx.reply('Icon import is already running.')
+    async with icon_lock:
+        await ctx.reply(f'Importing missing NosTale icons ({len(ICON_URLS)} total). Existing icons will be reused.')
+        await load_app_icons()
+        created = 0
+        failures = []
+        consecutive_network_errors = 0
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent':'NosTale-Discord-PartyBot/3.0'}) as session:
+            for spec, url in ICON_URLS.items():
+                name = icon_name(spec)
+                if name in app_icons:
+                    continue
+                if consecutive_network_errors >= 3:
+                    failures.append(f'{spec}: source unavailable')
+                    continue
+                try:
+                    async with session.get(url, allow_redirects=False) as response:
+                        response.raise_for_status()
+                        # Limit downloads to Discord's emoji size limit.
+                        data = await response.content.readexactly(8)
+                        if data != b'\x89PNG\r\n\x1a\n':
+                            raise ValueError('Source did not return a PNG')
+                        async for chunk in response.content.iter_chunked(8192):
+                            data += chunk
+                            if len(data) > 256 * 1024:
+                                raise ValueError('PNG exceeds 256 KiB')
+                    consecutive_network_errors = 0
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, asyncio.IncompleteReadError) as error:
+                    consecutive_network_errors += 1
+                    failures.append(f'{spec}: {type(error).__name__}')
+                    log.warning('Icon download failed %s: %s', url, error)
+                    continue
+                try:
+                    emoji = await bot.create_application_emoji(name=name, image=data)
+                    app_icons[name] = discord.PartialEmoji(name=emoji.name, id=emoji.id, animated=emoji.animated)
+                    created += 1
+                except discord.HTTPException as error:
+                    failures.append(f'{spec}: Discord HTTP {error.status}')
+                    log.warning('Emoji creation failed %s: %s', name, error)
+        refreshed = 0
+        async with party_lock:
+            for p in list(parties.values()):
+                if p['guild_id'] == ctx.guild.id and p['end'] > time.time():
+                    try:
+                        await refresh_party(p)
+                        refreshed += 1
+                    except Exception:
+                        log.exception('Could not refresh lobby %s', p['channel_id'])
+        result = (f'✅ Icons ready: **{len(app_icons)}/{len(ICON_URLS)}** (new: {created}). '
+                  f'Updated lobbies: {refreshed}.')
+        if failures:
+            result += '\n⚠️ Missing icons use the standard class emoji. Retry `!setup-icons`.\n' + ', '.join(failures)
+        await ctx.reply(result[:1900], allowed_mentions=NO_MENTIONS)
+
+@setup_icons.error
+async def setup_icons_error(ctx, error):
+    if isinstance(error, (commands.MissingPermissions, commands.NoPrivateMessage)):
+        await ctx.reply('Only a server administrator can run !setup-icons on a server.')
+    else:
+        log.error('Icon setup failed: %s', error)
+        await ctx.reply('Icon setup failed. Check the server logs. Existing lobbies remain usable.')
+
 @bot.command(name='setup-lol')
 @commands.guild_only()
 @commands.has_guild_permissions(administrator=True)
@@ -1124,6 +1243,12 @@ async def lobby_on_ready():
         bot._lobby_views_registered = True
     if not lobby_cleanup.is_running():
         lobby_cleanup.start()
+    try:
+        async with icon_lock:
+            await load_app_icons()
+        print(f'NosTale icons loaded: {len(app_icons)}/{len(ICON_URLS)}')
+    except Exception:
+        log.exception('Could not load application emojis; standard class icons remain available')
 
 @bot.listen('on_guild_channel_delete')
 async def lobby_deleted(channel):
