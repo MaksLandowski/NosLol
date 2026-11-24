@@ -18,7 +18,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
-# INTERACTIVE LAND OF LIFE LOBBIES (v4)
+# INTERACTIVE LAND OF LIFE LOBBIES (v4.1)
 # =========================
 import asyncio
 import logging
@@ -362,6 +362,24 @@ async def category_for(guild):
         return matches[0]
     return await guild.create_category(LOBBY_CATEGORY, reason='Land of Life setup')
 
+def lol_zone(level):
+    # Normal LoL (C30-C59) and advanced LoL (C60+) use separate maps.
+    return 'LOL60' if int(level.split('-')[0][1:]) >= 60 else 'LOL'
+
+
+def find_party_conflict(existing, *, guild_id, start, game_channel, level, area):
+    """Only Bottom + Top may share a channel in the same LoL map/time."""
+    zone = lol_zone(level)
+    for p in existing:
+        if (p['guild_id'] != guild_id or p['start'] != start
+                or p['game_channel'] != game_channel or lol_zone(p['level']) != zone):
+            continue
+        # Same area, Middle or Any are mutually exclusive with other parties.
+        if {area, p['area']} != {'Bottom', 'Top'}:
+            return p
+    return None
+
+
 class CreateView(SafeView):
     def __init__(self, hour, member):
         super().__init__(timeout=300)
@@ -386,9 +404,16 @@ class CreateView(SafeView):
         async with party_lock:
             if self.start <= time.time():
                 return await private(i, 'This time has passed. Please select the hour again.')
-            for p in parties.values():
-                if p['guild_id']==i.guild_id and p['start']==self.start and p['game_channel']==int(self.game_channel) and p['level']==self.level and p['area']==self.area:
-                    return await private(i, f'A matching party already exists: <#{p["channel_id"]}>')
+            # Check and reserve under the same lock to prevent simultaneous bookings.
+            conflict = find_party_conflict(
+                parties.values(), guild_id=i.guild_id, start=self.start,
+                game_channel=int(self.game_channel), level=self.level, area=self.area)
+            if conflict is not None:
+                local = datetime.fromtimestamp(self.start, BERLIN)
+                return await private(i,
+                    f'❌ CH{self.game_channel} is already occupied by a **{conflict["area"]}** '
+                    f'party at {local:%H:%M} ({lol_zone(self.level)}, Berlin time): '
+                    f'<#{conflict["channel_id"]}>.\nPlease select another channel or compatible area.')
             cat = await category_for(i.guild)
             local = datetime.fromtimestamp(self.start, BERLIN)
             name = f'party-{local:%H-%M}-ch{self.game_channel}-{self.level.lower()}'
